@@ -1,0 +1,5 @@
+node_modules/
+apps/api/data/notes-db.json
+.aws-sam/
+.wrangler/
+dist/

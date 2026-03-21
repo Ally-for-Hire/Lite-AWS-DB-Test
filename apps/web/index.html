@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Versioned Notes</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="card masthead">
+        <div class="masthead__copy">
+          <div class="masthead__eyebrow-row">
+            <p class="eyebrow">Versioned workspace</p>
+            <span class="hero-badge">AWS-ready</span>
+          </div>
+          <h1>Notes with an actual timeline.</h1>
+          <p class="masthead__text">
+            Create immutable saves, move the current pointer with undo and redo, and preview or restore any historical version without losing the head.
+          </p>
+        </div>
+
+        <div class="masthead__stats">
+          <article class="stat-card">
+            <span id="notes-count" class="stat-card__value">0</span>
+            <span class="stat-card__label">Notes</span>
+          </article>
+          <article class="stat-card">
+            <span id="versions-count" class="stat-card__value">0</span>
+            <span class="stat-card__label">Versions</span>
+          </article>
+        </div>
+      </header>
+
+      <div class="app-grid">
+        <aside class="rail">
+          <form id="create-form" class="card create-card">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Create</p>
+                <h2>Start a new note</h2>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>Title</span>
+              <input id="new-title" name="title" maxlength="120" placeholder="Architecture draft" required />
+            </label>
+            <label class="field">
+              <span>Opening content</span>
+              <textarea
+                id="new-content"
+                name="content"
+                rows="6"
+                placeholder="Write the first version..."
+              ></textarea>
+            </label>
+            <button type="submit" class="button button--primary button--wide">Create Note</button>
+          </form>
+
+          <section class="card notes-card">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Library</p>
+                <h2>Notes</h2>
+              </div>
+              <button id="refresh-notes" class="button button--ghost" type="button">Refresh</button>
+            </div>
+            <div id="notes-empty" class="empty-state">No notes yet. Create one from the panel above.</div>
+            <div id="notes-list" class="notes-list"></div>
+          </section>
+        </aside>
+
+        <main class="editor-column">
+          <section class="card editor-card">
+            <div class="panel-heading panel-heading--editor">
+              <div>
+                <p class="eyebrow">Current head</p>
+                <h2 id="editor-heading">Select a note</h2>
+                <p class="panel-copy">Edit the current version here. Saving always creates a new version at the top of the timeline.</p>
+              </div>
+              <div class="status" id="note-status">No note selected</div>
+            </div>
+
+            <form id="editor-form">
+              <label class="field">
+                <span>Title</span>
+                <input id="editor-title" name="title" maxlength="120" disabled required />
+              </label>
+              <label class="field">
+                <span>Content</span>
+                <textarea id="editor-content" name="content" rows="16" disabled></textarea>
+              </label>
+
+              <div class="toolbar">
+                <button id="save-note" class="button button--primary" type="submit" disabled>Save New Version</button>
+                <button id="undo-note" class="button" type="button" disabled>Undo</button>
+                <button id="redo-note" class="button" type="button" disabled>Redo</button>
+              </div>
+            </form>
+          </section>
+        </main>
+
+        <aside class="history-column">
+          <section class="card guide-card">
+            <p class="eyebrow">Flow</p>
+            <h2>How this behaves</h2>
+            <ul class="guide-list">
+              <li>Saving never overwrites history.</li>
+              <li>Undo and redo only move the current pointer.</li>
+              <li>Restore creates a new head from an old version.</li>
+            </ul>
+          </section>
+
+          <section class="card preview-card">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Preview</p>
+                <h2>Inspect a version</h2>
+              </div>
+              <div class="status status--muted" id="preview-label">No preview</div>
+            </div>
+            <div id="preview-empty" class="empty-state">Preview a historical version here without overwriting the editor.</div>
+            <div id="preview-body" class="preview-body" hidden>
+              <h3 id="preview-title"></h3>
+              <p id="preview-meta" class="preview-meta"></p>
+              <pre id="preview-content" class="preview-content"></pre>
+            </div>
+          </section>
+
+          <section class="card history-card">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Timeline</p>
+                <h2>Version history</h2>
+                <p class="panel-copy">Preview, restore, or inspect the sequence that led to the current head.</p>
+              </div>
+              <button id="refresh-history" class="button button--ghost" type="button" disabled>Refresh</button>
+            </div>
+            <div id="history-empty" class="empty-state">Pick a note to inspect its history.</div>
+            <div id="history-list" class="history-list"></div>
+          </section>
+        </aside>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" aria-live="polite"></div>
+    <script src="/config.js"></script>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>
