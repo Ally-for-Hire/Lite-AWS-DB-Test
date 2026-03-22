@@ -1,10 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "versioned-notes",
-  "main": "apps/worker/src/index.js",
+  "main": "worker/index.js",
   "compatibility_date": "2026-03-21",
   "assets": {
-    "directory": "apps/web",
+    "directory": "web",
     "binding": "ASSETS",
     "run_worker_first": ["/api/*"],
     "not_found_handling": "404-page"
@@ -14,7 +14,7 @@
       "binding": "DB",
       "database_name": "versioned-notes-db",
       "database_id": "8a841f68-c0f5-4bc7-abb6-74cb9b58b481",
-      "migrations_dir": "apps/worker/migrations"
+      "migrations_dir": "worker"
     }
   ]
 }
