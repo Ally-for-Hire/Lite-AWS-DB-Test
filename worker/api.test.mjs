@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { handleApiRequest } from "../src/api.js";
-import { D1NoteStore } from "../src/noteStore.js";
+import { handleApiRequest } from "./api.js";
+import { D1NoteStore } from "./noteStore.js";
 
 class MemoryNoteStore {
   constructor() {
