@@ -1,94 +1,261 @@
+const apiBase = "/api";
+
 const state = {
+  noteId: null,
+  note: null,
   notes: [],
-  currentNoteId: null,
-  currentNote: null,
   versions: [],
-  previewVersion: null,
   toastTimer: null
 };
 
-const API_BASE_URL = String(window.APP_CONFIG?.API_BASE_URL || "/api").replace(/\/+$/, "");
-
-const elements = {
+const el = {
   createForm: document.querySelector("#create-form"),
   newTitle: document.querySelector("#new-title"),
   newContent: document.querySelector("#new-content"),
-  refreshNotes: document.querySelector("#refresh-notes"),
-  notesList: document.querySelector("#notes-list"),
-  notesEmpty: document.querySelector("#notes-empty"),
+  reload: document.querySelector("#reload"),
   notesCount: document.querySelector("#notes-count"),
-  versionsCount: document.querySelector("#versions-count"),
-  editorHeading: document.querySelector("#editor-heading"),
-  noteStatus: document.querySelector("#note-status"),
+  notesEmpty: document.querySelector("#notes-empty"),
+  notesList: document.querySelector("#notes-list"),
+  editorTitleLabel: document.querySelector("#editor-title-label"),
+  editorStatus: document.querySelector("#editor-status"),
   editorForm: document.querySelector("#editor-form"),
   editorTitle: document.querySelector("#editor-title"),
   editorContent: document.querySelector("#editor-content"),
-  saveNote: document.querySelector("#save-note"),
-  undoNote: document.querySelector("#undo-note"),
-  redoNote: document.querySelector("#redo-note"),
-  refreshHistory: document.querySelector("#refresh-history"),
-  historyList: document.querySelector("#history-list"),
-  historyEmpty: document.querySelector("#history-empty"),
-  previewLabel: document.querySelector("#preview-label"),
-  previewEmpty: document.querySelector("#preview-empty"),
-  previewBody: document.querySelector("#preview-body"),
-  previewTitle: document.querySelector("#preview-title"),
-  previewMeta: document.querySelector("#preview-meta"),
-  previewContent: document.querySelector("#preview-content"),
-  toast: document.querySelector("#toast")
+  save: document.querySelector("#save"),
+  undo: document.querySelector("#undo"),
+  redo: document.querySelector("#redo"),
+  versionsCount: document.querySelector("#versions-count"),
+  versionsEmpty: document.querySelector("#versions-empty"),
+  versionsList: document.querySelector("#versions-list"),
+  message: document.querySelector("#message")
 };
 
-async function api(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    },
+async function api(path, options) {
+  const response = await fetch(`${apiBase}${path}`, {
+    headers: { "Content-Type": "application/json" },
     ...options
   });
-
-  const payload = await response.json().catch(() => ({}));
-
+  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.message || "Request failed");
+    throw new Error(data.message || "Request failed");
   }
-
-  return payload;
+  return data;
 }
 
-function showToast(message) {
+function showMessage(text) {
   clearTimeout(state.toastTimer);
-  elements.toast.textContent = message;
-  elements.toast.classList.add("is-visible");
+  el.message.textContent = text;
+  el.message.hidden = false;
   state.toastTimer = window.setTimeout(() => {
-    elements.toast.classList.remove("is-visible");
-  }, 2400);
+    el.message.hidden = true;
+  }, 2000);
 }
 
 function formatDate(value) {
   return new Date(value).toLocaleString();
 }
 
-function formatSourceLabel(value) {
-  if (!value) {
-    return "Version";
+function setEditorDisabled(disabled) {
+  el.editorTitle.disabled = disabled;
+  el.editorContent.disabled = disabled;
+  el.save.disabled = disabled;
+
+  if (disabled) {
+    el.undo.disabled = true;
+    el.redo.disabled = true;
+  }
+}
+
+function syncActions() {
+  if (!state.note) {
+    el.undo.disabled = true;
+    el.redo.disabled = true;
+    return;
   }
 
-  return value.charAt(0).toUpperCase() + value.slice(1);
+  el.undo.disabled = state.note.currentVersion <= 1;
+  el.redo.disabled = state.note.currentVersion >= state.note.latestVersion;
 }
 
-function setCounts() {
-  elements.notesCount.textContent = String(state.notes.length);
-  elements.versionsCount.textContent = state.currentNote ? String(state.versions.length) : "0";
+function renderNotes() {
+  el.notesList.innerHTML = "";
+  el.notesCount.textContent = String(state.notes.length);
+  el.notesEmpty.hidden = state.notes.length > 0;
+
+  state.notes.forEach((note) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `note-row${note.noteId === state.noteId ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="note-main">
+        <strong>${escapeHtml(note.title)}</strong>
+        <span class="muted">v${note.currentVersion} • ${escapeHtml(formatDate(note.updatedAt))}</span>
+      </div>
+    `;
+    row.addEventListener("click", () => {
+      void selectNote(note.noteId);
+    });
+    el.notesList.appendChild(row);
+  });
 }
 
-function setEditorEnabled(enabled) {
-  elements.editorTitle.disabled = !enabled;
-  elements.editorContent.disabled = !enabled;
-  elements.saveNote.disabled = !enabled;
-  elements.undoNote.disabled = !enabled;
-  elements.redoNote.disabled = !enabled;
-  elements.refreshHistory.disabled = !enabled;
+function renderEditor() {
+  if (!state.note) {
+    el.editorTitleLabel.textContent = "Editor";
+    el.editorStatus.textContent = "No note selected";
+    el.editorTitle.value = "";
+    el.editorContent.value = "";
+    setEditorDisabled(true);
+    return;
+  }
+
+  el.editorTitleLabel.textContent = state.note.title;
+  el.editorStatus.textContent = `Current version: ${state.note.currentVersion}`;
+  el.editorTitle.value = state.note.title;
+  el.editorContent.value = state.note.content;
+  setEditorDisabled(false);
+  syncActions();
+}
+
+function renderVersions() {
+  el.versionsList.innerHTML = "";
+  el.versionsCount.textContent = String(state.versions.length);
+  el.versionsEmpty.hidden = state.versions.length > 0;
+
+  state.versions.forEach((version) => {
+    const row = document.createElement("div");
+    row.className = "version-row";
+
+    const restoreDisabled = !state.note || version.version === state.note.currentVersion;
+
+    row.innerHTML = `
+      <div class="version-main">
+        <strong>Version ${version.version}</strong>
+        <span>${escapeHtml(version.title)}</span>
+        <div class="version-meta">
+          <span>${escapeHtml(version.source)}</span>
+          <span>${escapeHtml(formatDate(version.editedAt))}</span>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="preview-button" type="button">Preview</button>
+        <button class="restore-button" type="button" ${restoreDisabled ? "disabled" : ""}>Restore</button>
+      </div>
+    `;
+
+    row.querySelector(".preview-button").addEventListener("click", async () => {
+      try {
+        const preview = await api(`/notes/${state.noteId}/versions/${version.version}`);
+        el.editorTitle.value = preview.title;
+        el.editorContent.value = preview.content;
+        el.editorStatus.textContent = `Previewing version: ${preview.version}`;
+        showMessage(`Previewed version ${preview.version}`);
+      } catch (error) {
+        showMessage(error.message);
+      }
+    });
+
+    row.querySelector(".restore-button").addEventListener("click", async () => {
+      try {
+        await api(`/notes/${state.noteId}/restore/${version.version}`, { method: "POST" });
+        await refresh();
+        await selectNote(state.noteId);
+        showMessage(`Restored version ${version.version}`);
+      } catch (error) {
+        showMessage(error.message);
+      }
+    });
+
+    el.versionsList.appendChild(row);
+  });
+}
+
+async function refresh() {
+  const data = await api("/notes");
+  state.notes = data.notes;
+  renderNotes();
+
+  if (!state.notes.length) {
+    state.noteId = null;
+    state.note = null;
+    state.versions = [];
+    renderEditor();
+    renderVersions();
+    return;
+  }
+
+  if (!state.notes.some((note) => note.noteId === state.noteId)) {
+    await selectNote(state.notes[0].noteId);
+  }
+}
+
+async function selectNote(noteId) {
+  state.noteId = noteId;
+  state.note = await api(`/notes/${noteId}`);
+  const versions = await api(`/notes/${noteId}/versions`);
+  state.versions = versions.versions;
+  renderNotes();
+  renderEditor();
+  renderVersions();
+}
+
+async function createNote(event) {
+  event.preventDefault();
+
+  try {
+    const created = await api("/notes", {
+      method: "POST",
+      body: JSON.stringify({
+        title: el.newTitle.value,
+        content: el.newContent.value
+      })
+    });
+    el.createForm.reset();
+    await refresh();
+    await selectNote(created.noteId);
+    showMessage("Note created");
+  } catch (error) {
+    showMessage(error.message);
+  }
+}
+
+async function saveNote(event) {
+  event.preventDefault();
+
+  if (!state.note) {
+    return;
+  }
+
+  try {
+    await api(`/notes/${state.noteId}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        title: el.editorTitle.value,
+        content: el.editorContent.value,
+        expectedCurrentVersion: state.note.currentVersion
+      })
+    });
+    await refresh();
+    await selectNote(state.noteId);
+    showMessage("Saved");
+  } catch (error) {
+    showMessage(error.message);
+  }
+}
+
+async function movePointer(action) {
+  if (!state.noteId) {
+    return;
+  }
+
+  try {
+    await api(`/notes/${state.noteId}/${action}`, { method: "POST" });
+    await refresh();
+    await selectNote(state.noteId);
+    showMessage(action);
+  } catch (error) {
+    showMessage(error.message);
+  }
 }
 
 function escapeHtml(value) {
@@ -100,261 +267,17 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-function renderNotes() {
-  elements.notesList.innerHTML = "";
-  elements.notesEmpty.hidden = state.notes.length > 0;
-  setCounts();
-
-  state.notes.forEach((note) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "note-item";
-
-    if (note.noteId === state.currentNoteId) {
-      button.classList.add("is-active");
-    }
-
-    button.innerHTML = `
-      <div class="note-item__head">
-        <div>
-          <p class="note-item__eyebrow">Current head</p>
-          <h3>${escapeHtml(note.title)}</h3>
-        </div>
-        <span class="meta-chip meta-chip--accent">v${note.currentVersion}</span>
-      </div>
-      <div class="meta-row">
-        <span>Updated ${escapeHtml(formatDate(note.updatedAt))}</span>
-      </div>
-    `;
-
-    button.addEventListener("click", () => {
-      void selectNote(note.noteId);
-    });
-
-    elements.notesList.appendChild(button);
-  });
-}
-
-function renderEditor() {
-  const note = state.currentNote;
-
-  if (!note) {
-    elements.editorHeading.textContent = "Select a note";
-    elements.noteStatus.textContent = "No note selected";
-    elements.editorTitle.value = "";
-    elements.editorContent.value = "";
-    setEditorEnabled(false);
-    return;
-  }
-
-  elements.editorHeading.textContent = note.title;
-  elements.noteStatus.textContent = `Current version v${note.currentVersion}`;
-  elements.editorTitle.value = note.title;
-  elements.editorContent.value = note.content;
-  setEditorEnabled(true);
-}
-
-function renderPreview() {
-  const preview = state.previewVersion;
-
-  if (!preview) {
-    elements.previewLabel.textContent = "No preview";
-    elements.previewEmpty.hidden = false;
-    elements.previewBody.hidden = true;
-    elements.previewTitle.textContent = "";
-    elements.previewMeta.textContent = "";
-    elements.previewContent.textContent = "";
-    return;
-  }
-
-  elements.previewLabel.textContent = `Preview v${preview.version}`;
-  elements.previewEmpty.hidden = true;
-  elements.previewBody.hidden = false;
-  elements.previewTitle.textContent = preview.title;
-  elements.previewMeta.textContent = `${formatSourceLabel(preview.source)} | ${formatDate(preview.editedAt)}`;
-  elements.previewContent.textContent = preview.content || "(No content)";
-}
-
-function renderHistory() {
-  elements.historyList.innerHTML = "";
-  elements.historyEmpty.hidden = state.versions.length > 0;
-  setCounts();
-
-  state.versions.forEach((entry) => {
-    const container = document.createElement("article");
-    container.className = "history-item";
-
-    if (state.currentNote && entry.version === state.currentNote.currentVersion) {
-      container.classList.add("is-current");
-    }
-
-    const restoreDisabled = !state.currentNote || entry.version === state.currentNote.currentVersion;
-
-    container.innerHTML = `
-      <div class="history-topline">
-        <div>
-          <h3>Version ${entry.version}</h3>
-          <p class="history-subtitle">${escapeHtml(entry.title)}</p>
-        </div>
-        <span class="source-badge">${escapeHtml(formatSourceLabel(entry.source))}</span>
-      </div>
-      <div class="meta-row">
-        <span>${escapeHtml(formatDate(entry.editedAt))}</span>
-        ${entry.baseVersion ? `<span>Base v${entry.baseVersion}</span>` : ""}
-      </div>
-      <div class="history-actions">
-        <button class="button button--ghost history-preview" type="button">Preview</button>
-        <button class="button history-restore" type="button" ${restoreDisabled ? "disabled" : ""}>Restore</button>
-      </div>
-    `;
-
-    container.querySelector(".history-preview").addEventListener("click", async () => {
-      try {
-        state.previewVersion = await api(`/notes/${state.currentNoteId}/versions/${entry.version}`);
-        renderPreview();
-        showToast(`Loaded version ${entry.version} into preview`);
-      } catch (error) {
-        showToast(error.message);
-      }
-    });
-
-    container.querySelector(".history-restore").addEventListener("click", () => {
-      void restoreVersion(entry.version);
-    });
-
-    elements.historyList.appendChild(container);
-  });
-}
-
-async function refreshNotes() {
-  const data = await api("/notes");
-  state.notes = data.notes;
-  renderNotes();
-}
-
-async function loadHistory() {
-  if (!state.currentNoteId) {
-    state.versions = [];
-    state.previewVersion = null;
-    renderPreview();
-    renderHistory();
-    return;
-  }
-
-  const data = await api(`/notes/${state.currentNoteId}/versions`);
-  state.versions = data.versions;
-  renderHistory();
-}
-
-async function selectNote(noteId) {
-  state.currentNoteId = noteId;
-  state.currentNote = await api(`/notes/${noteId}`);
-  state.previewVersion = null;
-  renderPreview();
-  renderNotes();
-  renderEditor();
-  await loadHistory();
-}
-
-async function createNote(event) {
-  event.preventDefault();
-
-  try {
-    const created = await api("/notes", {
-      method: "POST",
-      body: JSON.stringify({
-        title: elements.newTitle.value,
-        content: elements.newContent.value
-      })
-    });
-
-    elements.createForm.reset();
-    await refreshNotes();
-    await selectNote(created.noteId);
-    showToast("Note created");
-  } catch (error) {
-    showToast(error.message);
-  }
-}
-
-async function saveNote(event) {
-  event.preventDefault();
-
-  if (!state.currentNote) {
-    return;
-  }
-
-  try {
-    await api(`/notes/${state.currentNoteId}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        title: elements.editorTitle.value,
-        content: elements.editorContent.value,
-        expectedCurrentVersion: state.currentNote.currentVersion
-      })
-    });
-
-    await refreshNotes();
-    await selectNote(state.currentNoteId);
-    showToast("Saved as a new version");
-  } catch (error) {
-    showToast(error.message);
-  }
-}
-
-async function movePointer(action) {
-  if (!state.currentNoteId) {
-    return;
-  }
-
-  try {
-    await api(`/notes/${state.currentNoteId}/${action}`, {
-      method: "POST"
-    });
-
-    await refreshNotes();
-    await selectNote(state.currentNoteId);
-    showToast(action === "undo" ? "Moved back one version" : "Moved forward one version");
-  } catch (error) {
-    showToast(error.message);
-  }
-}
-
-async function restoreVersion(versionNumber) {
-  if (!state.currentNoteId) {
-    return;
-  }
-
-  try {
-    await api(`/notes/${state.currentNoteId}/restore/${versionNumber}`, {
-      method: "POST"
-    });
-
-    await refreshNotes();
-    await selectNote(state.currentNoteId);
-    showToast(`Restored version ${versionNumber} as a new head`);
-  } catch (error) {
-    showToast(error.message);
-  }
-}
-
-elements.createForm.addEventListener("submit", createNote);
-elements.editorForm.addEventListener("submit", saveNote);
-elements.refreshNotes.addEventListener("click", () => {
-  void refreshNotes().catch((error) => showToast(error.message));
+el.createForm.addEventListener("submit", createNote);
+el.editorForm.addEventListener("submit", saveNote);
+el.reload.addEventListener("click", () => {
+  void refresh().catch((error) => showMessage(error.message));
 });
-elements.refreshHistory.addEventListener("click", () => {
-  void loadHistory().catch((error) => showToast(error.message));
-});
-elements.undoNote.addEventListener("click", () => {
+el.undo.addEventListener("click", () => {
   void movePointer("undo");
 });
-elements.redoNote.addEventListener("click", () => {
+el.redo.addEventListener("click", () => {
   void movePointer("redo");
 });
 
-setEditorEnabled(false);
-renderPreview();
-setCounts();
-
-void refreshNotes().catch((error) => showToast(error.message));
+setEditorDisabled(true);
+void refresh().catch((error) => showMessage(error.message));
