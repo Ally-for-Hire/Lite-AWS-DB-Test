@@ -1,14 +1,16 @@
 {
-  "name": "lite-aws-db-test",
+  "name": "versioned-notes",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "start": "node apps/api/server.js",
-    "dev": "npx wrangler dev",
-    "deploy": "npx wrangler deploy && npm run cf:migrate:remote",
-    "cf:migrate:local": "npx wrangler d1 migrations apply versioned-notes-db --local",
-    "cf:migrate:remote": "npx wrangler d1 migrations apply versioned-notes-db --remote",
-    "test": "node apps/api/test/runTests.js",
-    "build:web": "node scripts/prepareWebBuild.mjs"
+    "start": "wrangler dev",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate": "wrangler d1 migrations apply versioned-notes-db --remote",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "^4.76.0"
   }
 }
