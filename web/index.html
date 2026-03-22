@@ -11,14 +11,14 @@
       <header class="header">
         <div>
           <h1>Versioned Notes</h1>
-          <p>Create notes. Every save creates a new version.</p>
+          <p>Create notes and keep a clear version history.</p>
         </div>
         <button id="reload" type="button">Reload</button>
       </header>
 
       <section class="layout">
         <aside class="panel">
-          <h2>New Note</h2>
+          <h2>Create Note</h2>
           <form id="create-form" class="stack">
             <input id="new-title" name="title" maxlength="120" placeholder="Title" required />
             <textarea id="new-content" name="content" rows="6" placeholder="Content"></textarea>
@@ -54,7 +54,7 @@
 
         <section class="panel">
           <div class="panel-head">
-            <h2>Versions</h2>
+            <h2>Version History</h2>
             <span id="versions-count">0</span>
           </div>
           <div id="versions-empty" class="muted">Select a note.</div>
