@@ -1,6 +1,5 @@
-import { handleApiRequest } from "../../api/src/apiCore.js";
-import { isHttpError } from "../../api/src/errors.js";
-import { D1NoteStore } from "./d1NoteStore.js";
+import { HttpError, handleApiRequest } from "./api.js";
+import { D1NoteStore } from "./noteStore.js";
 
 function jsonResponse(statusCode, body) {
   return new Response(JSON.stringify(body), {
@@ -14,11 +13,27 @@ function jsonResponse(statusCode, body) {
   });
 }
 
+function isApiRequest(pathname) {
+  return pathname.startsWith("/api");
+}
+
+async function readJsonBody(request) {
+  if (request.method !== "POST" && request.method !== "PUT") {
+    return undefined;
+  }
+
+  try {
+    return await request.json();
+  } catch {
+    throw new Error("INVALID_JSON");
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (request.method === "OPTIONS" && url.pathname.startsWith("/api")) {
+    if (request.method === "OPTIONS" && isApiRequest(url.pathname)) {
       return new Response(null, {
         status: 204,
         headers: {
@@ -29,18 +44,16 @@ export default {
       });
     }
 
-    if (!url.pathname.startsWith("/api")) {
+    if (!isApiRequest(url.pathname)) {
       return env.ASSETS.fetch(request);
     }
 
     try {
-      const body =
-        request.method === "POST" || request.method === "PUT" ? await request.json().catch(() => {
-          throw new Error("INVALID_JSON");
-        }) : undefined;
-
+      const body = await readJsonBody(request);
       const store = new D1NoteStore(env.DB);
+
       await store.init();
+
       const result = await handleApiRequest({
         method: request.method,
         pathname: url.pathname,
@@ -57,7 +70,7 @@ export default {
         });
       }
 
-      if (isHttpError(error)) {
+      if (error instanceof HttpError) {
         return jsonResponse(error.status, {
           error: error.error,
           message: error.message

@@ -1,4 +1,4 @@
-import { HttpError } from "../../api/src/errors.js";
+import { HttpError } from "./api.js";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS notes (
@@ -26,20 +26,38 @@ CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_note_versions_note_id_version ON note_versions(note_id, version DESC);
 `;
 
-let schemaPromise;
+const SCHEMA_STATEMENTS = SCHEMA_SQL
+  .split(";")
+  .map((statement) => statement.trim())
+  .filter(Boolean);
+
+const schemaPromises = new WeakMap();
 
 function isoNow() {
   return new Date().toISOString();
 }
 
-export class D1NoteStore {
+class D1NoteStore {
   constructor(db) {
     this.db = db;
   }
 
   async init() {
+    let schemaPromise = schemaPromises.get(this.db);
+
     if (!schemaPromise) {
-      schemaPromise = this.db.exec(SCHEMA_SQL);
+      schemaPromise = (async () => {
+        try {
+          for (const statement of SCHEMA_STATEMENTS) {
+            await this.db.prepare(statement).run();
+          }
+        } catch (error) {
+          schemaPromises.delete(this.db);
+          throw error;
+        }
+      })();
+
+      schemaPromises.set(this.db, schemaPromise);
     }
 
     await schemaPromise;
@@ -93,12 +111,7 @@ export class D1NoteStore {
         .bind(noteId, title, content, createdAt)
     ]);
 
-    return {
-      noteId,
-      currentVersion: 1,
-      title,
-      content
-    };
+    return { noteId, currentVersion: 1, title, content };
   }
 
   async getNote(noteId) {
@@ -109,6 +122,7 @@ export class D1NoteStore {
           v.title,
           v.content,
           n.current_version AS currentVersion,
+          n.latest_version AS latestVersion,
           n.updated_at AS updatedAt
         FROM notes n
         JOIN note_versions v
@@ -127,7 +141,7 @@ export class D1NoteStore {
   }
 
   async updateNote(noteId, { title, content, expectedCurrentVersion }) {
-    const note = await this.#getRequiredNoteMeta(noteId);
+    const note = await this.#getNoteMeta(noteId);
 
     if (note.currentVersion !== expectedCurrentVersion) {
       throw new HttpError(409, "Conflict", "Version mismatch");
@@ -159,14 +173,11 @@ export class D1NoteStore {
         .bind(title, nextVersionNumber, nextVersionNumber, editedAt, noteId, expectedCurrentVersion)
     ]);
 
-    return {
-      noteId,
-      currentVersion: nextVersionNumber
-    };
+    return { noteId, currentVersion: nextVersionNumber };
   }
 
   async listVersions(noteId) {
-    await this.#getRequiredNoteMeta(noteId);
+    await this.#getNoteMeta(noteId);
 
     const { results = [] } = await this.db
       .prepare(
@@ -187,7 +198,7 @@ export class D1NoteStore {
   }
 
   async getVersion(noteId, versionNumber) {
-    const note = await this.#getRequiredNoteMeta(noteId);
+    const note = await this.#getNoteMeta(noteId);
     const version = await this.db
       .prepare(
         `SELECT
@@ -208,64 +219,31 @@ export class D1NoteStore {
       throw new HttpError(404, "NotFound", "Version not found");
     }
 
-    return {
-      ...version,
-      isCurrent: note.currentVersion === version.version
-    };
+    return { ...version, isCurrent: note.currentVersion === version.version };
   }
 
   async undo(noteId) {
-    const note = await this.#getRequiredNoteMeta(noteId);
+    const note = await this.#getNoteMeta(noteId);
 
     if (note.currentVersion <= 1) {
       throw new HttpError(409, "Conflict", "Cannot undo past version 1");
     }
 
-    const targetVersion = await this.getVersion(noteId, note.currentVersion - 1);
-    const updatedAt = isoNow();
-
-    await this.db
-      .prepare(
-        `UPDATE notes
-         SET title = ?, current_version = ?, updated_at = ?
-         WHERE note_id = ? AND current_version = ?`
-      )
-      .bind(targetVersion.title, targetVersion.version, updatedAt, noteId, note.currentVersion)
-      .run();
-
-    return {
-      noteId,
-      currentVersion: targetVersion.version
-    };
+    return this.#moveCurrentVersion(noteId, note.currentVersion, note.currentVersion - 1);
   }
 
   async redo(noteId) {
-    const note = await this.#getRequiredNoteMeta(noteId);
+    const note = await this.#getNoteMeta(noteId);
 
     if (note.currentVersion >= note.latestVersion) {
       throw new HttpError(409, "Conflict", "Cannot redo because no newer version exists");
     }
 
-    const targetVersion = await this.getVersion(noteId, note.currentVersion + 1);
-    const updatedAt = isoNow();
-
-    await this.db
-      .prepare(
-        `UPDATE notes
-         SET title = ?, current_version = ?, updated_at = ?
-         WHERE note_id = ? AND current_version = ?`
-      )
-      .bind(targetVersion.title, targetVersion.version, updatedAt, noteId, note.currentVersion)
-      .run();
-
-    return {
-      noteId,
-      currentVersion: targetVersion.version
-    };
+    return this.#moveCurrentVersion(noteId, note.currentVersion, note.currentVersion + 1);
   }
 
   async restoreVersion(noteId, versionNumber) {
-    const note = await this.#getRequiredNoteMeta(noteId);
+    const note = await this.#getNoteMeta(noteId);
     const restoredVersion = await this.getVersion(noteId, versionNumber);
     const nextVersionNumber = note.latestVersion + 1;
     const editedAt = isoNow();
@@ -293,14 +271,26 @@ export class D1NoteStore {
         .bind(restoredVersion.title, nextVersionNumber, nextVersionNumber, editedAt, noteId, note.currentVersion)
     ]);
 
-    return {
-      noteId,
-      currentVersion: nextVersionNumber,
-      restoredFrom: versionNumber
-    };
+    return { noteId, currentVersion: nextVersionNumber, restoredFrom: versionNumber };
   }
 
-  async #getRequiredNoteMeta(noteId) {
+  async #moveCurrentVersion(noteId, currentVersion, nextVersion) {
+    const targetVersion = await this.getVersion(noteId, nextVersion);
+    const updatedAt = isoNow();
+
+    await this.db
+      .prepare(
+        `UPDATE notes
+         SET title = ?, current_version = ?, updated_at = ?
+         WHERE note_id = ? AND current_version = ?`
+      )
+      .bind(targetVersion.title, targetVersion.version, updatedAt, noteId, currentVersion)
+      .run();
+
+    return { noteId, currentVersion: targetVersion.version };
+  }
+
+  async #getNoteMeta(noteId) {
     const note = await this.db
       .prepare(
         `SELECT
@@ -323,3 +313,5 @@ export class D1NoteStore {
     return note;
   }
 }
+
+export { D1NoteStore };
