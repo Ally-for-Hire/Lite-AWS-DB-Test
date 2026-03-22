@@ -21,7 +21,7 @@ Create a note in the left panel, select it, edit it, and click `Save Version`.
 - `worker/index.js` Worker entrypoint
 - `worker/api.js` routes and validation
 - `worker/noteStore.js` D1 note storage
-- `worker/schema.sql` D1 schema
+- `worker/0001_init.sql` D1 schema migration
 - `wrangler.jsonc` Cloudflare config
 
 ## Cloudflare Flow
@@ -43,4 +43,24 @@ At runtime:
 For deployment:
 
 - `npm run deploy` publishes the Worker and static assets
-- `npm run migrate` applies `worker/schema.sql` to the remote D1 database
+- `npm run migrate` applies the numbered migration files in `worker/` to the remote D1 database
+
+## GitHub Actions
+
+This repo includes:
+
+- `.github/workflows/ci.yml` to run tests on pull requests and non-`main` pushes
+- `.github/workflows/deploy.yml` to test, deploy, and migrate on pushes to `main`
+
+Required GitHub repository secrets:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+## Persistence
+
+Production data lives in the remote Cloudflare D1 database identified by `database_id` in `wrangler.jsonc`.
+
+- Deploying the Worker does not delete D1 data
+- Notes and versions stay in D1 between deploys and restarts
+- `npm run migrate` only applies new numbered SQL migrations, which is the safe path for schema changes
