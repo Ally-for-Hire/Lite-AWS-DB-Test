@@ -4,7 +4,42 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Versioned Notes</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      :root { color-scheme: light; font-family: Arial, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #f4f4f4; color: #111; }
+      button, input, textarea { font: inherit; }
+      .app { max-width: 1200px; margin: 0 auto; padding: 16px; }
+      .header, .panel-head, .actions, .note-row, .version-row, .version-meta { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+      .header { margin-bottom: 16px; }
+      .service-alert { margin-bottom: 16px; padding: 12px 14px; border: 1px solid #d6b25e; border-radius: 8px; background: #fff7e1; color: #5c4300; }
+      .header h1, .panel h2 { margin: 0 0 4px; }
+      .header p, .muted { margin: 0; color: #666; }
+      .status-note { margin: 0 0 12px; padding: 10px 12px; border-radius: 6px; background: #f3f3f3; color: #333; }
+      .layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
+      .panel { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
+      .editor { grid-column: 2; }
+      .stack { display: grid; gap: 8px; }
+      input, textarea, button { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; }
+      button { background: #111; color: #fff; cursor: pointer; }
+      button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid #111; outline-offset: 2px; }
+      button:disabled { background: #999; cursor: not-allowed; }
+      .actions { align-items: stretch; }
+      .actions button { flex: 1; }
+      .note-row, .version-row { width: 100%; background: #fafafa; color: #111; border: 1px solid #ddd; text-align: left; }
+      .note-row.active { border-color: #111; }
+      .note-row button, .version-row button { width: auto; }
+      .note-main, .version-main { display: grid; gap: 4px; }
+      .version-meta { justify-content: flex-start; color: #666; font-size: 12px; }
+      .preview-panel { margin-bottom: 12px; padding: 12px; border: 1px solid #ddd; border-radius: 8px; background: #fafafa; }
+      .preview-panel h3 { margin: 0; }
+      .preview-content { margin: 8px 0 0; padding: 12px; border-radius: 6px; background: #fff; border: 1px solid #ddd; white-space: pre-wrap; word-break: break-word; font: inherit; }
+      .message { position: fixed; right: 16px; bottom: 16px; background: #111; color: #fff; padding: 12px 16px; border-radius: 6px; }
+      @media (max-width: 900px) {
+        .layout { grid-template-columns: 1fr; }
+        .editor { grid-column: auto; }
+      }
+    </style>
   </head>
   <body>
     <main class="app">
@@ -15,6 +50,7 @@
         </div>
         <button id="reload" type="button">Reload</button>
       </header>
+      <div id="service-alert" class="service-alert" hidden></div>
 
       <section class="layout">
         <aside class="panel">
@@ -40,6 +76,7 @@
             <h2 id="editor-title-label">Editor</h2>
             <span id="editor-status" class="muted">No note selected</span>
           </div>
+          <p id="draft-status" class="status-note" hidden></p>
 
           <form id="editor-form" class="stack">
             <input id="editor-title" name="title" maxlength="120" placeholder="Title" disabled required />
@@ -57,13 +94,403 @@
             <h2>Version History</h2>
             <span id="versions-count">0</span>
           </div>
-          <div id="versions-empty" class="muted">Select a note.</div>
+          <div id="versions-empty" class="muted">Select a note. Open any version to move around the tree, or fork from history to append a new branch.</div>
+          <section id="preview-panel" class="preview-panel" hidden>
+            <div class="panel-head">
+              <h3 id="preview-title">Version Preview</h3>
+              <button id="close-preview" type="button">Close Preview</button>
+            </div>
+            <p id="preview-meta" class="muted"></p>
+            <pre id="preview-content" class="preview-content"></pre>
+          </section>
           <div id="versions-list" class="stack"></div>
         </section>
       </section>
     </main>
 
-    <div id="message" class="message" hidden></div>
-    <script type="module" src="/app.js"></script>
+    <div id="message" class="message" hidden aria-live="polite"></div>
+    <script type="module">
+      const apiBase = "/api";
+      const unsavedDraftMessage = "Unsaved draft changes. Save to create a new child version before switching notes or history.";
+      const localDraftPrefix = "versioned-notes:draft:";
+      const state = { noteId: null, note: null, notes: [], versions: [], draftTitle: "", draftContent: "", preview: null, serviceAlert: "", toastTimer: null };
+      const el = {
+        createForm: document.querySelector("#create-form"),
+        newTitle: document.querySelector("#new-title"),
+        newContent: document.querySelector("#new-content"),
+        reload: document.querySelector("#reload"),
+        serviceAlert: document.querySelector("#service-alert"),
+        notesCount: document.querySelector("#notes-count"),
+        notesEmpty: document.querySelector("#notes-empty"),
+        notesList: document.querySelector("#notes-list"),
+        editorTitleLabel: document.querySelector("#editor-title-label"),
+        editorStatus: document.querySelector("#editor-status"),
+        draftStatus: document.querySelector("#draft-status"),
+        editorForm: document.querySelector("#editor-form"),
+        editorTitle: document.querySelector("#editor-title"),
+        editorContent: document.querySelector("#editor-content"),
+        save: document.querySelector("#save"),
+        undo: document.querySelector("#undo"),
+        redo: document.querySelector("#redo"),
+        versionsCount: document.querySelector("#versions-count"),
+        versionsEmpty: document.querySelector("#versions-empty"),
+        versionsList: document.querySelector("#versions-list"),
+        previewPanel: document.querySelector("#preview-panel"),
+        previewTitle: document.querySelector("#preview-title"),
+        previewMeta: document.querySelector("#preview-meta"),
+        previewContent: document.querySelector("#preview-content"),
+        closePreview: document.querySelector("#close-preview"),
+        message: document.querySelector("#message")
+      };
+
+      function createApiError(response, data) {
+        const error = new Error(data.message || "Request failed");
+        error.status = response.status;
+        error.code = data.code;
+        error.errorType = data.error;
+        error.isDegraded = response.status === 429 || response.status >= 503 || data.error === "FreeTierLimit" || data.error === "PlatformLimit";
+        return error;
+      }
+
+      async function api(path, options) {
+        const requestOptions = { ...options };
+        if (requestOptions.body !== undefined) {
+          requestOptions.headers = { "Content-Type": "application/json", ...requestOptions.headers };
+        }
+        const response = await fetch(`${apiBase}${path}`, requestOptions);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw createApiError(response, data);
+        return data;
+      }
+
+      function setServiceAlert(text) {
+        state.serviceAlert = text;
+        el.serviceAlert.hidden = !text;
+        el.serviceAlert.textContent = text;
+      }
+
+      function showMessage(text) {
+        clearTimeout(state.toastTimer);
+        el.message.textContent = text;
+        el.message.hidden = false;
+        state.toastTimer = window.setTimeout(() => { el.message.hidden = true; }, 2000);
+      }
+
+      function formatDate(value) { return new Date(value).toLocaleString(); }
+
+      function setEditorDisabled(disabled) {
+        el.editorTitle.disabled = disabled;
+        el.editorContent.disabled = disabled;
+        el.save.disabled = disabled;
+        if (disabled) {
+          el.undo.disabled = true;
+          el.redo.disabled = true;
+        }
+      }
+
+      function getLocalDraftKey(noteId) { return `${localDraftPrefix}${noteId}`; }
+      function saveLocalDraft(noteId) {
+        if (!noteId) return;
+        localStorage.setItem(getLocalDraftKey(noteId), JSON.stringify({
+          title: state.draftTitle,
+          content: state.draftContent,
+          expectedCurrentVersion: state.note?.currentVersion ?? null,
+          savedAt: new Date().toISOString()
+        }));
+      }
+      function readLocalDraft(noteId) {
+        if (!noteId) return null;
+        try {
+          const value = localStorage.getItem(getLocalDraftKey(noteId));
+          return value ? JSON.parse(value) : null;
+        } catch {
+          return null;
+        }
+      }
+      function clearLocalDraft(noteId) { if (noteId) localStorage.removeItem(getLocalDraftKey(noteId)); }
+
+      function restoreDraftFromCurrentNote() {
+        if (!state.note) {
+          state.draftTitle = "";
+          state.draftContent = "";
+          return;
+        }
+        const localDraft = readLocalDraft(state.noteId);
+        if (localDraft && typeof localDraft.title === "string" && typeof localDraft.content === "string") {
+          state.draftTitle = localDraft.title;
+          state.draftContent = localDraft.content;
+          showMessage("Recovered local draft after a failed save");
+          return;
+        }
+        state.draftTitle = state.note.title;
+        state.draftContent = state.note.content;
+      }
+
+      function isDirty() {
+        return !!state.note && (state.draftTitle !== state.note.title || state.draftContent !== state.note.content);
+      }
+
+      function clearPreview() { state.preview = null; }
+      function getCurrentVersionEntry() { return state.versions.find((version) => version.isCurrent) || null; }
+      function describeVersion(version) {
+        const parts = [version.source];
+        if (Number.isInteger(version.parentVersion)) parts.push(`parent v${version.parentVersion}`);
+        if (Number.isInteger(version.restoredFromVersion)) parts.push(`copied from v${version.restoredFromVersion}`);
+        if (version.childCount > 0) parts.push(`${version.childCount} child${version.childCount === 1 ? "" : "ren"}`);
+        return parts.join(" | ");
+      }
+
+      function syncActions() {
+        if (!state.note) {
+          el.undo.disabled = true;
+          el.redo.disabled = true;
+          return;
+        }
+        const dirty = isDirty();
+        const currentVersion = getCurrentVersionEntry();
+        el.save.disabled = !dirty;
+        el.undo.disabled = dirty || !Number.isInteger(state.note.parentVersion);
+        el.redo.disabled = dirty || !currentVersion || currentVersion.childCount !== 1;
+      }
+
+      function renderNotes() {
+        el.notesList.innerHTML = "";
+        el.notesCount.textContent = String(state.notes.length);
+        el.notesEmpty.hidden = state.notes.length > 0;
+        state.notes.forEach((note) => {
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = `note-row${note.noteId === state.noteId ? " active" : ""}`;
+          row.dataset.noteId = note.noteId;
+          row.innerHTML = `<div class="note-main"><strong>${escapeHtml(note.title)}</strong><span class="muted">v${note.currentVersion} - ${escapeHtml(formatDate(note.updatedAt))}</span></div>`;
+          row.addEventListener("click", () => { void handleNoteSelection(note.noteId); });
+          el.notesList.appendChild(row);
+        });
+      }
+
+      function renderEditor() {
+        if (!state.note) {
+          el.editorTitleLabel.textContent = "Editor";
+          el.editorStatus.textContent = "No note selected";
+          el.draftStatus.hidden = true;
+          el.draftStatus.textContent = "";
+          el.editorTitle.value = "";
+          el.editorContent.value = "";
+          setEditorDisabled(true);
+          return;
+        }
+        const dirty = isDirty();
+        const details = [`Current version: ${state.note.currentVersion}`];
+        if (Number.isInteger(state.note.parentVersion)) details.push(`parent v${state.note.parentVersion}`);
+        if (Number.isInteger(state.note.restoredFromVersion)) details.push(`copied from v${state.note.restoredFromVersion}`);
+        el.editorTitleLabel.textContent = state.note.title;
+        el.editorStatus.textContent = details.join(" | ");
+        el.draftStatus.hidden = !dirty;
+        el.draftStatus.textContent = dirty ? unsavedDraftMessage : "";
+        el.editorTitle.value = state.draftTitle;
+        el.editorContent.value = state.draftContent;
+        setEditorDisabled(false);
+        syncActions();
+      }
+
+      function renderPreview() {
+        if (!state.preview) {
+          el.previewPanel.hidden = true;
+          el.previewTitle.textContent = "Version Preview";
+          el.previewMeta.textContent = "";
+          el.previewContent.textContent = "";
+          return;
+        }
+        el.previewPanel.hidden = false;
+        el.previewTitle.textContent = `Version ${state.preview.version}`;
+        el.previewMeta.textContent = `${describeVersion({ ...state.preview, childCount: state.preview.childCount || 0 })} | ${formatDate(state.preview.editedAt)}`;
+        el.previewContent.textContent = state.preview.content;
+      }
+
+      function renderVersions() {
+        el.versionsList.innerHTML = "";
+        el.versionsCount.textContent = String(state.versions.length);
+        el.versionsEmpty.hidden = state.versions.length > 0;
+        const dirty = isDirty();
+        state.versions.forEach((version) => {
+          const row = document.createElement("div");
+          row.className = "version-row";
+          row.dataset.version = String(version.version);
+          const openDisabled = !state.note || dirty || version.isCurrent;
+          const forkDisabled = !state.note || dirty;
+          row.innerHTML = `
+            <div class="version-main">
+              <strong>Version ${version.version}${version.isCurrent ? " (current)" : ""}</strong>
+              <span>${escapeHtml(version.title)}</span>
+              <div class="version-meta">
+                <span>${escapeHtml(describeVersion(version))}</span>
+                <span>${escapeHtml(formatDate(version.editedAt))}</span>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="preview-button" type="button">Preview</button>
+              <button class="open-button" type="button" ${openDisabled ? "disabled" : ""}>Open</button>
+              <button class="fork-button" type="button" ${forkDisabled ? "disabled" : ""}>Fork</button>
+            </div>
+          `;
+          row.querySelector(".preview-button").addEventListener("click", async () => {
+            try {
+              state.preview = await api(`/notes/${state.noteId}/versions/${version.version}`);
+              renderPreview();
+              showMessage(`Previewed version ${version.version}`);
+            } catch (error) {
+              handleApiFailure(error, "Unable to preview that version right now");
+            }
+          });
+          row.querySelector(".open-button").addEventListener("click", async () => {
+            if (isDirty()) return void showMessage("Save your draft before opening another branch");
+            try {
+              await api(`/notes/${state.noteId}/current/${version.version}`, { method: "POST" });
+              await refresh();
+              await selectNote(state.noteId);
+              showMessage(`Opened version ${version.version}`);
+            } catch (error) {
+              handleApiFailure(error, "Unable to open that branch right now");
+            }
+          });
+          row.querySelector(".fork-button").addEventListener("click", async () => {
+            if (isDirty()) return void showMessage("Save your draft before forking from history");
+            try {
+              await api(`/notes/${state.noteId}/restore/${version.version}`, { method: "POST" });
+              await refresh();
+              await selectNote(state.noteId);
+              showMessage(`Forked from version ${version.version}`);
+            } catch (error) {
+              handleApiFailure(error, "Unable to fork from history right now");
+            }
+          });
+          el.versionsList.appendChild(row);
+        });
+      }
+
+      function handleApiFailure(error, fallbackMessage) {
+        if (error.isDegraded) setServiceAlert(error.message);
+        showMessage(error.message || fallbackMessage);
+      }
+
+      async function refresh() {
+        const data = await api("/notes");
+        state.notes = data.notes;
+        renderNotes();
+        if (!state.notes.length) {
+          state.noteId = null;
+          state.note = null;
+          state.versions = [];
+          restoreDraftFromCurrentNote();
+          clearPreview();
+          renderEditor();
+          renderPreview();
+          renderVersions();
+          return;
+        }
+        if (!state.notes.some((note) => note.noteId === state.noteId)) {
+          await selectNote(state.notes[0].noteId);
+        }
+      }
+
+      async function selectNote(noteId) {
+        state.noteId = noteId;
+        state.note = await api(`/notes/${noteId}`);
+        const versions = await api(`/notes/${noteId}/versions`);
+        state.versions = versions.versions;
+        restoreDraftFromCurrentNote();
+        clearPreview();
+        renderNotes();
+        renderEditor();
+        renderPreview();
+        renderVersions();
+      }
+
+      async function handleNoteSelection(noteId) {
+        if (noteId === state.noteId) return;
+        if (isDirty()) return void showMessage("Save your draft before switching notes");
+        await selectNote(noteId);
+      }
+
+      async function createNote(event) {
+        event.preventDefault();
+        try {
+          const created = await api("/notes", { method: "POST", body: JSON.stringify({ title: el.newTitle.value, content: el.newContent.value }) });
+          el.createForm.reset();
+          setServiceAlert("");
+          await refresh();
+          await selectNote(created.noteId);
+          showMessage("Note created");
+        } catch (error) {
+          handleApiFailure(error, "Unable to create note");
+        }
+      }
+
+      async function saveNote(event) {
+        event.preventDefault();
+        if (!state.note) return;
+        try {
+          await api(`/notes/${state.noteId}`, {
+            method: "PUT",
+            body: JSON.stringify({
+              title: state.draftTitle,
+              content: state.draftContent,
+              expectedCurrentVersion: state.note.currentVersion
+            })
+          });
+          clearLocalDraft(state.noteId);
+          setServiceAlert("");
+          await refresh();
+          await selectNote(state.noteId);
+          showMessage("Saved as a new child version");
+        } catch (error) {
+          saveLocalDraft(state.noteId);
+          handleApiFailure(error, "Unable to save right now. Your draft was kept locally.");
+        }
+      }
+
+      async function movePointer(action) {
+        if (!state.noteId) return;
+        if (isDirty()) return void showMessage(`Save your draft before using ${action}`);
+        try {
+          await api(`/notes/${state.noteId}/${action}`, { method: "POST" });
+          setServiceAlert("");
+          await refresh();
+          await selectNote(state.noteId);
+          showMessage(action);
+        } catch (error) {
+          handleApiFailure(error, `Unable to ${action} right now`);
+        }
+      }
+
+      function handleDraftInput() {
+        state.draftTitle = el.editorTitle.value;
+        state.draftContent = el.editorContent.value;
+        renderEditor();
+        renderVersions();
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      el.createForm.addEventListener("submit", createNote);
+      el.editorForm.addEventListener("submit", saveNote);
+      el.editorTitle.addEventListener("input", handleDraftInput);
+      el.editorContent.addEventListener("input", handleDraftInput);
+      el.reload.addEventListener("click", () => { void refresh().catch((error) => handleApiFailure(error, "Unable to reload notes")); });
+      el.undo.addEventListener("click", () => { void movePointer("undo"); });
+      el.redo.addEventListener("click", () => { void movePointer("redo"); });
+      el.closePreview.addEventListener("click", () => { clearPreview(); renderPreview(); });
+
+      setEditorDisabled(true);
+      renderPreview();
+      void refresh().catch((error) => handleApiFailure(error, "Unable to load notes"));
+    </script>
   </body>
 </html>

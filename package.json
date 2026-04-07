@@ -8,9 +8,13 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "migrate": "wrangler d1 migrations apply versioned-notes-db --remote",
-    "test": "node --test"
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --test",
+    "test:e2e": "playwright test",
+    "smoke:live": "node --input-type=module -e \"const base=(process.env.SMOKE_URL||'https://versioned-notes.zacyandell.workers.dev').replace(/\\/$/,''); const [home,health]=await Promise.all([fetch(base),fetch(base+'/api/health')]); const html=await home.text(); if(!home.ok||!html.includes('Versioned Notes')) throw new Error('Live homepage check failed'); const data=await health.json(); if(!health.ok||!data.ok) throw new Error('Live health check failed'); console.log('Live smoke OK:', base);\""
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "wrangler": "^4.76.0"
   }
 }

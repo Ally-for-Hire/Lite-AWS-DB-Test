@@ -11,6 +11,21 @@ npm start
 
 Open `http://127.0.0.1:8787`.
 
+## Tests
+
+Unit and browser tests both run through:
+
+```bash
+npx playwright install chromium
+npm test
+```
+
+This runs:
+
+- `npm run test:unit` for API and storage tests
+- `npm run test:e2e` for Playwright browser coverage against a local Wrangler instance
+- `npm run smoke:live` for a minimal post-deploy check against the live site
+
 Basic workflow:
 
 - Create a note
@@ -21,10 +36,8 @@ Basic workflow:
 
 ## Project Structure
 
-- `web/` static frontend
-- `worker/index.js` Worker entrypoint
-- `worker/api.js` API routing and validation
-- `worker/noteStore.js` D1 storage logic
+- `web/index.html` entire frontend
+- `worker/index.js` entire Worker and storage logic
 - `worker/0001_init.sql` initial D1 migration
 - `wrangler.jsonc` Cloudflare and Wrangler configuration
 

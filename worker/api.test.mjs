@@ -1,8 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { handleApiRequest } from "./api.js";
-import { D1NoteStore } from "./noteStore.js";
+import { D1NoteStore, handleApiRequest } from "./index.js";
 
 class MemoryNoteStore {
   constructor() {
@@ -20,6 +19,14 @@ class MemoryNoteStore {
 
   getVersions(noteId) {
     return this.versions.get(noteId) || [];
+  }
+
+  getVersionEntry(noteId, versionNumber) {
+    return this.getVersions(noteId).find((entry) => entry.version === versionNumber);
+  }
+
+  countChildren(noteId, versionNumber) {
+    return this.getVersions(noteId).filter((entry) => entry.parentVersion === versionNumber).length;
   }
 
   async listNotes() {
@@ -55,7 +62,8 @@ class MemoryNoteStore {
         content,
         editedAt: timestamp,
         source: "create",
-        baseVersion: null
+        parentVersion: null,
+        restoredFromVersion: null
       }
     ]);
 
@@ -65,7 +73,7 @@ class MemoryNoteStore {
   async getNote(noteId) {
     const note = this.notes.get(noteId);
     assert.ok(note, "note should exist");
-    const version = this.getVersions(noteId).find((entry) => entry.version === note.currentVersion);
+    const version = this.getVersionEntry(noteId, note.currentVersion);
 
     return {
       noteId,
@@ -73,6 +81,8 @@ class MemoryNoteStore {
       content: version.content,
       currentVersion: note.currentVersion,
       latestVersion: note.latestVersion,
+      parentVersion: version.parentVersion,
+      restoredFromVersion: version.restoredFromVersion,
       updatedAt: note.updatedAt
     };
   }
@@ -80,10 +90,16 @@ class MemoryNoteStore {
   async updateNote(noteId, { title, content, expectedCurrentVersion }) {
     const note = this.notes.get(noteId);
     assert.ok(note, "note should exist");
-    assert.equal(note.currentVersion, expectedCurrentVersion, "version mismatch in test store");
+
+    if (note.currentVersion !== expectedCurrentVersion) {
+      const error = new Error("Version mismatch");
+      error.status = 409;
+      throw error;
+    }
 
     const nextVersion = note.latestVersion + 1;
     const timestamp = this.now();
+
     this.getVersions(noteId).push({
       noteId,
       version: nextVersion,
@@ -91,7 +107,8 @@ class MemoryNoteStore {
       content,
       editedAt: timestamp,
       source: "edit",
-      baseVersion: expectedCurrentVersion
+      parentVersion: expectedCurrentVersion,
+      restoredFromVersion: null
     });
 
     note.title = title;
@@ -99,34 +116,63 @@ class MemoryNoteStore {
     note.latestVersion = nextVersion;
     note.updatedAt = timestamp;
 
-    return { noteId, currentVersion: nextVersion };
+    return { noteId, currentVersion: nextVersion, parentVersion: expectedCurrentVersion };
   }
 
   async listVersions(noteId) {
+    const note = this.notes.get(noteId);
+    assert.ok(note, "note should exist");
+
     return [...this.getVersions(noteId)]
       .sort((left, right) => right.version - left.version)
-      .map(({ version, editedAt, source, title, baseVersion }) => ({
+      .map(({ version, editedAt, source, title, parentVersion, restoredFromVersion }) => ({
         version,
         editedAt,
         source,
         title,
-        baseVersion
+        parentVersion,
+        restoredFromVersion,
+        childCount: this.countChildren(noteId, version),
+        isCurrent: note.currentVersion === version
       }));
   }
 
   async getVersion(noteId, versionNumber) {
     const note = this.notes.get(noteId);
     assert.ok(note, "note should exist");
-    const version = this.getVersions(noteId).find((entry) => entry.version === versionNumber);
+    const version = this.getVersionEntry(noteId, versionNumber);
     assert.ok(version, "version should exist");
     return { ...version, isCurrent: note.currentVersion === versionNumber };
+  }
+
+  async setCurrentVersion(noteId, versionNumber) {
+    const note = this.notes.get(noteId);
+    assert.ok(note, "note should exist");
+    const version = this.getVersionEntry(noteId, versionNumber);
+    if (!version) {
+      const error = new Error("Version not found");
+      error.status = 404;
+      throw error;
+    }
+    note.currentVersion = versionNumber;
+    note.title = version.title;
+    note.updatedAt = this.now();
+    return { noteId, currentVersion: versionNumber };
   }
 
   async undo(noteId) {
     const note = this.notes.get(noteId);
     assert.ok(note, "note should exist");
-    note.currentVersion -= 1;
-    note.title = this.getVersions(noteId).find((entry) => entry.version === note.currentVersion).title;
+    const current = this.getVersionEntry(noteId, note.currentVersion);
+
+    if (!Number.isInteger(current.parentVersion)) {
+      const error = new Error("Cannot undo because this version has no parent");
+      error.status = 409;
+      throw error;
+    }
+
+    note.currentVersion = current.parentVersion;
+    note.title = this.getVersionEntry(noteId, note.currentVersion).title;
     note.updatedAt = this.now();
     return { noteId, currentVersion: note.currentVersion };
   }
@@ -134,8 +180,22 @@ class MemoryNoteStore {
   async redo(noteId) {
     const note = this.notes.get(noteId);
     assert.ok(note, "note should exist");
-    note.currentVersion += 1;
-    note.title = this.getVersions(noteId).find((entry) => entry.version === note.currentVersion).title;
+    const children = this.getVersions(noteId).filter((entry) => entry.parentVersion === note.currentVersion);
+
+    if (!children.length) {
+      const error = new Error("Cannot redo because no child version exists");
+      error.status = 409;
+      throw error;
+    }
+
+    if (children.length > 1) {
+      const error = new Error("Cannot redo because multiple branches exist");
+      error.status = 409;
+      throw error;
+    }
+
+    note.currentVersion = children[0].version;
+    note.title = children[0].title;
     note.updatedAt = this.now();
     return { noteId, currentVersion: note.currentVersion };
   }
@@ -143,11 +203,13 @@ class MemoryNoteStore {
   async restoreVersion(noteId, versionNumber) {
     const note = this.notes.get(noteId);
     assert.ok(note, "note should exist");
-    const restored = this.getVersions(noteId).find((entry) => entry.version === versionNumber);
+    const restored = this.getVersionEntry(noteId, versionNumber);
     assert.ok(restored, "version should exist");
+    const parentVersion = note.currentVersion;
 
     const nextVersion = note.latestVersion + 1;
     const timestamp = this.now();
+
     this.getVersions(noteId).push({
       noteId,
       version: nextVersion,
@@ -155,7 +217,8 @@ class MemoryNoteStore {
       content: restored.content,
       editedAt: timestamp,
       source: "restore",
-      baseVersion: versionNumber
+      parentVersion,
+      restoredFromVersion: versionNumber
     });
 
     note.title = restored.title;
@@ -163,11 +226,16 @@ class MemoryNoteStore {
     note.latestVersion = nextVersion;
     note.updatedAt = timestamp;
 
-    return { noteId, currentVersion: nextVersion, restoredFrom: versionNumber };
+    return {
+      noteId,
+      currentVersion: nextVersion,
+      parentVersion,
+      restoredFromVersion: versionNumber
+    };
   }
 }
 
-test("handleApiRequest supports create, edit, undo, redo, restore, and version reads", async () => {
+test("handleApiRequest supports append-only tree history and branch navigation", async () => {
   const store = new MemoryNoteStore();
 
   const created = await handleApiRequest({
@@ -177,24 +245,8 @@ test("handleApiRequest supports create, edit, undo, redo, restore, and version r
     store
   });
   assert.equal(created.statusCode, 201);
-  assert.equal(created.body.currentVersion, 1);
 
   const noteId = created.body.noteId;
-
-  const list = await handleApiRequest({
-    method: "GET",
-    pathname: "/api/notes",
-    store
-  });
-  assert.equal(list.statusCode, 200);
-  assert.equal(list.body.notes.length, 1);
-
-  const firstRead = await handleApiRequest({
-    method: "GET",
-    pathname: `/api/notes/${noteId}`,
-    store
-  });
-  assert.equal(firstRead.body.latestVersion, 1);
 
   const updated = await handleApiRequest({
     method: "PUT",
@@ -206,8 +258,28 @@ test("handleApiRequest supports create, edit, undo, redo, restore, and version r
     },
     store
   });
-  assert.equal(updated.statusCode, 200);
   assert.equal(updated.body.currentVersion, 2);
+  assert.equal(updated.body.parentVersion, 1);
+
+  const reopenedRoot = await handleApiRequest({
+    method: "POST",
+    pathname: `/api/notes/${noteId}/current/1`,
+    store
+  });
+  assert.equal(reopenedRoot.body.currentVersion, 1);
+
+  const forked = await handleApiRequest({
+    method: "PUT",
+    pathname: `/api/notes/${noteId}`,
+    body: {
+      title: "Forked draft",
+      content: "v3 fork body",
+      expectedCurrentVersion: 1
+    },
+    store
+  });
+  assert.equal(forked.body.currentVersion, 3);
+  assert.equal(forked.body.parentVersion, 1);
 
   const undone = await handleApiRequest({
     method: "POST",
@@ -216,20 +288,31 @@ test("handleApiRequest supports create, edit, undo, redo, restore, and version r
   });
   assert.equal(undone.body.currentVersion, 1);
 
-  const redone = await handleApiRequest({
+  await assert.rejects(
+    () =>
+      handleApiRequest({
+        method: "POST",
+        pathname: `/api/notes/${noteId}/redo`,
+        store
+      }),
+    (error) => error.status === 409 && error.message === "Cannot redo because multiple branches exist"
+  );
+
+  const openedBranch = await handleApiRequest({
     method: "POST",
-    pathname: `/api/notes/${noteId}/redo`,
+    pathname: `/api/notes/${noteId}/current/2`,
     store
   });
-  assert.equal(redone.body.currentVersion, 2);
+  assert.equal(openedBranch.body.currentVersion, 2);
 
   const restored = await handleApiRequest({
     method: "POST",
     pathname: `/api/notes/${noteId}/restore/1`,
     store
   });
-  assert.equal(restored.body.currentVersion, 3);
-  assert.equal(restored.body.restoredFrom, 1);
+  assert.equal(restored.body.currentVersion, 4);
+  assert.equal(restored.body.parentVersion, 2);
+  assert.equal(restored.body.restoredFromVersion, 1);
 
   const versions = await handleApiRequest({
     method: "GET",
@@ -240,22 +323,28 @@ test("handleApiRequest supports create, edit, undo, redo, restore, and version r
     versions.body.versions.map((entry) => ({
       version: entry.version,
       source: entry.source,
-      baseVersion: entry.baseVersion
+      parentVersion: entry.parentVersion,
+      restoredFromVersion: entry.restoredFromVersion,
+      childCount: entry.childCount,
+      isCurrent: entry.isCurrent
     })),
     [
-      { version: 3, source: "restore", baseVersion: 1 },
-      { version: 2, source: "edit", baseVersion: 1 },
-      { version: 1, source: "create", baseVersion: null }
+      { version: 4, source: "restore", parentVersion: 2, restoredFromVersion: 1, childCount: 0, isCurrent: true },
+      { version: 3, source: "edit", parentVersion: 1, restoredFromVersion: null, childCount: 0, isCurrent: false },
+      { version: 2, source: "edit", parentVersion: 1, restoredFromVersion: null, childCount: 1, isCurrent: false },
+      { version: 1, source: "create", parentVersion: null, restoredFromVersion: null, childCount: 2, isCurrent: false }
     ]
   );
 
   const currentVersion = await handleApiRequest({
     method: "GET",
-    pathname: `/api/notes/${noteId}/versions/3`,
+    pathname: `/api/notes/${noteId}/versions/4`,
     store
   });
   assert.equal(currentVersion.body.isCurrent, true);
   assert.equal(currentVersion.body.content, "v1 body");
+  assert.equal(currentVersion.body.parentVersion, 2);
+  assert.equal(currentVersion.body.restoredFromVersion, 1);
 });
 
 test("handleApiRequest validates bad inputs and paths", async () => {
@@ -293,6 +382,64 @@ test("handleApiRequest validates bad inputs and paths", async () => {
   );
 });
 
+test("handleApiRequest rejects invalid tree navigation and version conflicts", async () => {
+  const store = new MemoryNoteStore();
+
+  const created = await handleApiRequest({
+    method: "POST",
+    pathname: "/api/notes",
+    body: { title: "Draft", content: "v1 body" },
+    store
+  });
+
+  const noteId = created.body.noteId;
+
+  await assert.rejects(
+    () =>
+      handleApiRequest({
+        method: "POST",
+        pathname: `/api/notes/${noteId}/undo`,
+        store
+      }),
+    (error) => error.status === 409 && error.message === "Cannot undo because this version has no parent"
+  );
+
+  await assert.rejects(
+    () =>
+      handleApiRequest({
+        method: "POST",
+        pathname: `/api/notes/${noteId}/redo`,
+        store
+      }),
+    (error) => error.status === 409 && error.message === "Cannot redo because no child version exists"
+  );
+
+  await assert.rejects(
+    () =>
+      handleApiRequest({
+        method: "PUT",
+        pathname: `/api/notes/${noteId}`,
+        body: {
+          title: "Wrong version",
+          content: "oops",
+          expectedCurrentVersion: 2
+        },
+        store
+      }),
+    (error) => error.status === 409 && error.message === "Version mismatch"
+  );
+
+  await assert.rejects(
+    () =>
+      handleApiRequest({
+        method: "POST",
+        pathname: `/api/notes/${noteId}/current/99`,
+        store
+      }),
+    (error) => error.status === 404 && error.message === "Version not found"
+  );
+});
+
 test("D1NoteStore.init retries after a failed schema attempt", async () => {
   let runCount = 0;
   let shouldFail = true;
@@ -300,6 +447,13 @@ test("D1NoteStore.init retries after a failed schema attempt", async () => {
   const db = {
     prepare(statement) {
       return {
+        async all() {
+          if (statement === "PRAGMA table_info(note_versions)") {
+            return { results: [] };
+          }
+
+          return { results: [] };
+        },
         async run() {
           runCount += 1;
           if (statement.includes("CREATE TABLE IF NOT EXISTS notes") && shouldFail) {
