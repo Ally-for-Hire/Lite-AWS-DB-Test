@@ -175,6 +175,20 @@ function isMissingColumnError(error, columnName) {
   return error.message.toLowerCase().includes(`no such column: ${columnName}`);
 }
 
+function isConstraintError(error) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return message.includes("constraint") || message.includes("unique") || message.includes("primary key");
+}
+
+function changedRows(result) {
+  const changes = result?.meta?.changes ?? result?.changes;
+  return Number.isInteger(changes) ? changes : null;
+}
+
 async function readJsonBody(request) {
   if (request.method !== "POST" && request.method !== "PUT") {
     return undefined;
@@ -390,30 +404,40 @@ class D1NoteStore {
     const nextVersionNumber = note.latestVersion + 1;
     const editedAt = isoNow();
 
-    await this.db.batch([
-      this.db
-        .prepare(
-          `INSERT INTO note_versions (
-            note_id,
-            version,
-            title,
-            content,
-            edited_at,
-            source,
-            base_version,
-            parent_version,
-            restored_from_version
-          ) VALUES (?, ?, ?, ?, ?, 'edit', ?, ?, NULL)`
-        )
-        .bind(noteId, nextVersionNumber, title, content, editedAt, expectedCurrentVersion, expectedCurrentVersion),
-      this.db
-        .prepare(
-          `UPDATE notes
-           SET title = ?, current_version = ?, latest_version = ?, updated_at = ?
-           WHERE note_id = ? AND current_version = ?`
-        )
-        .bind(title, nextVersionNumber, nextVersionNumber, editedAt, noteId, expectedCurrentVersion)
-    ]);
+    let results;
+    try {
+      results = await this.db.batch([
+        this.db
+          .prepare(
+            `INSERT INTO note_versions (
+              note_id,
+              version,
+              title,
+              content,
+              edited_at,
+              source,
+              base_version,
+              parent_version,
+              restored_from_version
+            ) VALUES (?, ?, ?, ?, ?, 'edit', ?, ?, NULL)`
+          )
+          .bind(noteId, nextVersionNumber, title, content, editedAt, expectedCurrentVersion, expectedCurrentVersion),
+        this.db
+          .prepare(
+            `UPDATE notes
+             SET title = ?, current_version = ?, latest_version = ?, updated_at = ?
+             WHERE note_id = ? AND current_version = ?`
+          )
+          .bind(title, nextVersionNumber, nextVersionNumber, editedAt, noteId, expectedCurrentVersion)
+      ]);
+    } catch (error) {
+      if (isConstraintError(error)) {
+        throw new HttpError(409, "Conflict", "Version mismatch");
+      }
+      throw error;
+    }
+
+    await this.#assertExpectedVersionUpdated(results[1], () => this.#deleteVersion(noteId, nextVersionNumber));
 
     return { noteId, currentVersion: nextVersionNumber, parentVersion: expectedCurrentVersion };
   }
@@ -517,39 +541,49 @@ class D1NoteStore {
     const nextVersionNumber = note.latestVersion + 1;
     const editedAt = isoNow();
 
-    await this.db.batch([
-      this.db
-        .prepare(
-          `INSERT INTO note_versions (
-            note_id,
-            version,
-            title,
-            content,
-            edited_at,
-            source,
-            base_version,
-            parent_version,
-            restored_from_version
-          ) VALUES (?, ?, ?, ?, ?, 'restore', ?, ?, ?)`
-        )
-        .bind(
-          noteId,
-          nextVersionNumber,
-          restoredVersion.title,
-          restoredVersion.content,
-          editedAt,
-          note.currentVersion,
-          note.currentVersion,
-          versionNumber
-        ),
-      this.db
-        .prepare(
-          `UPDATE notes
-           SET title = ?, current_version = ?, latest_version = ?, updated_at = ?
-           WHERE note_id = ? AND current_version = ?`
-        )
-        .bind(restoredVersion.title, nextVersionNumber, nextVersionNumber, editedAt, noteId, note.currentVersion)
-    ]);
+    let results;
+    try {
+      results = await this.db.batch([
+        this.db
+          .prepare(
+            `INSERT INTO note_versions (
+              note_id,
+              version,
+              title,
+              content,
+              edited_at,
+              source,
+              base_version,
+              parent_version,
+              restored_from_version
+            ) VALUES (?, ?, ?, ?, ?, 'restore', ?, ?, ?)`
+          )
+          .bind(
+            noteId,
+            nextVersionNumber,
+            restoredVersion.title,
+            restoredVersion.content,
+            editedAt,
+            note.currentVersion,
+            note.currentVersion,
+            versionNumber
+          ),
+        this.db
+          .prepare(
+            `UPDATE notes
+             SET title = ?, current_version = ?, latest_version = ?, updated_at = ?
+             WHERE note_id = ? AND current_version = ?`
+          )
+          .bind(restoredVersion.title, nextVersionNumber, nextVersionNumber, editedAt, noteId, note.currentVersion)
+      ]);
+    } catch (error) {
+      if (isConstraintError(error)) {
+        throw new HttpError(409, "Conflict", "Version mismatch");
+      }
+      throw error;
+    }
+
+    await this.#assertExpectedVersionUpdated(results[1], () => this.#deleteVersion(noteId, nextVersionNumber));
 
     return {
       noteId,
@@ -577,7 +611,7 @@ class D1NoteStore {
     const targetVersion = await this.getVersion(noteId, nextVersion);
     const updatedAt = isoNow();
 
-    await this.db
+    const result = await this.db
       .prepare(
         `UPDATE notes
          SET title = ?, current_version = ?, updated_at = ?
@@ -585,6 +619,8 @@ class D1NoteStore {
       )
       .bind(targetVersion.title, targetVersion.version, updatedAt, noteId, currentVersion)
       .run();
+
+    await this.#assertExpectedVersionUpdated(result);
 
     return { noteId, currentVersion: targetVersion.version };
   }
@@ -628,6 +664,24 @@ class D1NoteStore {
       if (!isMissingColumnError(error, columnName)) {
         throw error;
       }
+    }
+  }
+
+  async #deleteVersion(noteId, versionNumber) {
+    await this.db
+      .prepare(
+        `DELETE FROM note_versions
+         WHERE note_id = ? AND version = ?`
+      )
+      .bind(noteId, versionNumber)
+      .run();
+  }
+
+  async #assertExpectedVersionUpdated(result, cleanup = null) {
+    const changes = changedRows(result);
+    if (changes !== null && changes < 1) {
+      if (cleanup) await cleanup();
+      throw new HttpError(409, "Conflict", "Version mismatch");
     }
   }
 

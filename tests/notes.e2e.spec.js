@@ -286,6 +286,30 @@ test("successful save clears degraded service state and local draft recovery", a
   await expect(page.locator("#editor-content")).toHaveValue("retry body");
 });
 
+test("reload refreshes the selected note and version history", async ({ page, request }) => {
+  const title = `Playwright reload ${uniqueSuffix()}`;
+
+  await createNote(page, title, "v1 body");
+  const noteId = await page.locator(".note-row.active").getAttribute("data-note-id");
+  expect(noteId).toBeTruthy();
+
+  const response = await request.put(`/api/notes/${noteId}`, {
+    data: {
+      title: `${title} remote`,
+      content: "v2 remote body",
+      expectedCurrentVersion: 1
+    }
+  });
+  expect(response.ok()).toBeTruthy();
+
+  await page.locator("#reload").click();
+
+  await expect(page.locator("#editor-title")).toHaveValue(`${title} remote`);
+  await expect(page.locator("#editor-content")).toHaveValue("v2 remote body");
+  await expect(page.locator("#editor-status")).toContainText("Current version: 2");
+  await expect(page.locator("#versions-count")).toHaveText("2");
+});
+
 test("concurrent editors preserve the losing draft on version conflict", async ({ browser }) => {
   const contextA = await browser.newContext();
   const contextB = await browser.newContext();

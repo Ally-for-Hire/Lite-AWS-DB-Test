@@ -24,7 +24,8 @@ This runs:
 
 - `npm run test:unit` for API and storage tests
 - `npm run test:e2e` for Playwright browser coverage against a local Wrangler instance
-- `npm run smoke:live` for a minimal post-deploy check against the live site
+
+After deployment, `npm run smoke:live` runs a minimal check against the live site.
 
 Basic workflow:
 

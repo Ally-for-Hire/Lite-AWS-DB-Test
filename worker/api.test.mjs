@@ -471,3 +471,46 @@ test("D1NoteStore.init retries after a failed schema attempt", async () => {
   await assert.doesNotReject(() => store.init());
   assert.ok(runCount > 1);
 });
+
+test("D1NoteStore.updateNote reports guarded zero-row updates as conflicts", async () => {
+  const db = {
+    prepare(statement) {
+      return {
+        bind() {
+          return this;
+        },
+        async first() {
+          if (statement.includes("FROM notes") && statement.includes("WHERE note_id = ?")) {
+            return {
+              noteId: "note-1",
+              title: "Draft",
+              currentVersion: 1,
+              latestVersion: 1,
+              createdAt: "2026-03-21T00:00:00.000Z",
+              updatedAt: "2026-03-21T00:00:00.000Z"
+            };
+          }
+          return null;
+        },
+        async run() {
+          return { meta: { changes: 1 } };
+        }
+      };
+    },
+    async batch() {
+      return [{ meta: { changes: 1 } }, { meta: { changes: 0 } }];
+    }
+  };
+
+  const store = new D1NoteStore(db);
+
+  await assert.rejects(
+    () =>
+      store.updateNote("note-1", {
+        title: "Remote collision",
+        content: "body",
+        expectedCurrentVersion: 1
+      }),
+    (error) => error.status === 409 && error.message === "Version mismatch"
+  );
+});

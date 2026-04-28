@@ -373,7 +373,7 @@
         showMessage(error.message || fallbackMessage);
       }
 
-      async function refresh() {
+      async function refresh({ reloadCurrent = false } = {}) {
         const data = await api("/notes");
         state.notes = data.notes;
         renderNotes();
@@ -388,9 +388,12 @@
           renderVersions();
           return;
         }
-        if (!state.notes.some((note) => note.noteId === state.noteId)) {
-          await selectNote(state.notes[0].noteId);
+        const currentNoteStillExists = state.notes.some((note) => note.noteId === state.noteId);
+        if (currentNoteStillExists) {
+          if (reloadCurrent) await selectNote(state.noteId);
+          return;
         }
+        await selectNote(state.notes[0].noteId);
       }
 
       async function selectNote(noteId) {
@@ -483,7 +486,10 @@
       el.editorForm.addEventListener("submit", saveNote);
       el.editorTitle.addEventListener("input", handleDraftInput);
       el.editorContent.addEventListener("input", handleDraftInput);
-      el.reload.addEventListener("click", () => { void refresh().catch((error) => handleApiFailure(error, "Unable to reload notes")); });
+      el.reload.addEventListener("click", () => {
+        if (isDirty()) return void showMessage("Save your draft before reloading the current note");
+        void refresh({ reloadCurrent: true }).catch((error) => handleApiFailure(error, "Unable to reload notes"));
+      });
       el.undo.addEventListener("click", () => { void movePointer("undo"); });
       el.redo.addEventListener("click", () => { void movePointer("redo"); });
       el.closePreview.addEventListener("click", () => { clearPreview(); renderPreview(); });
