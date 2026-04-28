@@ -488,9 +488,17 @@
       el.redo.addEventListener("click", () => { void movePointer("redo"); });
       el.closePreview.addEventListener("click", () => { clearPreview(); renderPreview(); });
 
+      async function checkHealth() {
+        try {
+          await api("/health");
+        } catch (error) {
+          setServiceAlert("Service health check failed. Some features may not work.");
+        }
+      }
+
       setEditorDisabled(true);
       renderPreview();
-      void refresh().catch((error) => handleApiFailure(error, "Unable to load notes"));
+      void Promise.all([checkHealth(), refresh()]).catch((error) => handleApiFailure(error, "Unable to load notes"));
     </script>
   </body>
 </html>
